@@ -87,6 +87,10 @@ A **Hybrid RAG + Vision** Telegram Bot that can answer questions from a knowledg
 └───────────────────────────────────────────────────┘
 ```
 
+
+## App Link : https://dkyadav960100-pixel-chatbot-streamlit-app-mbmm25.streamlit.app/
+
+---
 ## 🚀 Quick Start
 
 ### Prerequisites
