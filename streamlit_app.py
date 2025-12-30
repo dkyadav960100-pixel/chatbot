@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Advanced Streamlit App for GenAI RAG Chatbot
-Features: Chat interface, RAG visualization, Analytics, Image processing
+Features: Fast inference, Modern UI, Real-time streaming, Analytics
 """
 import streamlit as st
 import sys
 import os
 import time
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime
 import plotly.express as px
@@ -15,6 +16,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # Add project root to path
 project_root = Path(__file__).parent
@@ -23,177 +26,363 @@ sys.path.insert(0, str(project_root))
 from config import load_config, get_config
 from rag.retriever import RAGRetriever
 from llm.llm_handler import LLMHandler
-from vision.vision_handler import VisionHandler
-from prompt_handler import PromptHandler, QueryType, analyze_and_respond
+from prompt_handler import PromptHandler, QueryType
 
 # Page configuration
 st.set_page_config(
-    page_title="GenAI RAG Assistant",
+    page_title="🤖 AI Knowledge Assistant",
     page_icon="🤖",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for better styling
+# Modern CSS styling
 st.markdown("""
 <style>
-    /* Main container styling */
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Modern dark theme */
+    .stApp {
+        background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0f0f23 100%);
+    }
+    
+    /* Main container */
     .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
+        padding: 1rem 2rem;
+        max-width: 1400px;
     }
     
-    /* Chat message styling */
-    .chat-message {
-        padding: 1rem;
-        border-radius: 0.75rem;
-        margin-bottom: 1rem;
-        display: flex;
-        flex-direction: column;
-    }
-    
-    .user-message {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        margin-left: 2rem;
-    }
-    
-    .assistant-message {
-        background: linear-gradient(135deg, #f5f7fa 0%, #e4e8eb 100%);
-        color: #1a1a2e;
-        margin-right: 2rem;
-    }
-    
-    /* Metric card styling */
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    /* Chat container styling */
+    .chat-container {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 20px;
         padding: 1.5rem;
-        border-radius: 1rem;
+        margin-bottom: 1rem;
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Message bubbles */
+    .user-bubble {
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
         color: white;
-        text-align: center;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-    
-    .metric-value {
-        font-size: 2.5rem;
-        font-weight: bold;
-        margin-bottom: 0.5rem;
-    }
-    
-    .metric-label {
-        font-size: 0.9rem;
-        opacity: 0.9;
-    }
-    
-    /* Source card styling */
-    .source-card {
-        background: #f8f9fa;
-        border-left: 4px solid #667eea;
-        padding: 1rem;
+        padding: 1rem 1.5rem;
+        border-radius: 20px 20px 5px 20px;
         margin: 0.5rem 0;
-        border-radius: 0 0.5rem 0.5rem 0;
+        margin-left: 20%;
+        box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+        animation: slideInRight 0.3s ease;
+    }
+    
+    .assistant-bubble {
+        background: rgba(255, 255, 255, 0.08);
+        color: #e2e8f0;
+        padding: 1rem 1.5rem;
+        border-radius: 20px 20px 20px 5px;
+        margin: 0.5rem 0;
+        margin-right: 20%;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        animation: slideInLeft 0.3s ease;
+    }
+    
+    @keyframes slideInRight {
+        from { transform: translateX(30px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    
+    @keyframes slideInLeft {
+        from { transform: translateX(-30px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    
+    /* Typing indicator */
+    .typing-indicator {
+        display: flex;
+        gap: 4px;
+        padding: 1rem;
+    }
+    
+    .typing-dot {
+        width: 8px;
+        height: 8px;
+        background: #6366f1;
+        border-radius: 50%;
+        animation: typing 1.4s infinite ease-in-out;
+    }
+    
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    
+    @keyframes typing {
+        0%, 60%, 100% { transform: translateY(0); }
+        30% { transform: translateY(-10px); }
     }
     
     /* Header styling */
     .main-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 2.5rem;
-        font-weight: bold;
         text-align: center;
-        margin-bottom: 2rem;
+        padding: 1rem 0 2rem 0;
     }
     
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 50%, #ec4899 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    
+    .main-subtitle {
+        color: #94a3b8;
+        font-size: 1rem;
+    }
+    
+    /* Stat cards */
+    .stat-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 1.5rem;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .stat-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-5px);
+        box-shadow: 0 10px 30px rgba(99, 102, 241, 0.2);
+    }
+    
+    .stat-value {
+        font-size: 2rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    
+    .stat-label {
+        color: #94a3b8;
+        font-size: 0.85rem;
+        margin-top: 0.5rem;
+    }
+    
+    /* Quick action buttons */
+    .quick-btn {
+        background: rgba(99, 102, 241, 0.2);
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        color: #a5b4fc;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        margin: 0.25rem;
+        display: inline-block;
+    }
+    
+    .quick-btn:hover {
+        background: rgba(99, 102, 241, 0.4);
+        transform: scale(1.05);
+    }
+    
+    /* Status badges */
+    .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0.4rem 0.8rem;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    
+    .status-online {
+        background: rgba(34, 197, 94, 0.2);
+        color: #22c55e;
+        border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    
+    .status-offline {
+        background: rgba(239, 68, 68, 0.2);
+        color: #ef4444;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    
+    /* Source card */
+    .source-card {
+        background: rgba(99, 102, 241, 0.1);
+        border-left: 3px solid #6366f1;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        border-radius: 0 8px 8px 0;
+        font-size: 0.85rem;
+    }
+    
+    /* Input styling */
+    .stTextInput > div > div > input {
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 15px !important;
+        color: white !important;
+        padding: 1rem 1.5rem !important;
+    }
+    
+    .stTextInput > div > div > input:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2) !important;
     }
     
     /* Button styling */
     .stButton > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
         color: white;
         border: none;
-        border-radius: 0.5rem;
-        padding: 0.5rem 2rem;
-        font-weight: bold;
+        border-radius: 12px;
+        padding: 0.75rem 2rem;
+        font-weight: 600;
         transition: all 0.3s ease;
     }
     
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-    
-    /* Progress bar styling */
-    .stProgress > div > div {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        box-shadow: 0 10px 30px rgba(99, 102, 241, 0.4);
     }
     
     /* Tab styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
+        background: transparent;
     }
     
     .stTabs [data-baseweb="tab"] {
-        background: #f0f2f6;
-        border-radius: 0.5rem;
-        padding: 0.5rem 1rem;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        color: #94a3b8;
+        border: 1px solid rgba(255, 255, 255, 0.1);
     }
     
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
         color: white;
     }
     
-    /* Info box styling */
-    .info-box {
-        background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%);
-        padding: 1rem;
-        border-radius: 0.75rem;
-        margin: 1rem 0;
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
     }
     
-    /* Divider */
-    .custom-divider {
-        height: 2px;
-        background: linear-gradient(90deg, transparent, #667eea, transparent);
-        margin: 2rem 0;
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f0f23 0%, #1a1a3e 100%);
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div > div {
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    }
+    
+    /* Spinner */
+    .stSpinner > div {
+        border-top-color: #6366f1 !important;
+    }
+    
+    /* Chat message avatars */
+    .stChatMessage {
+        background: transparent !important;
+    }
+    
+    /* Response time badge */
+    .response-time {
+        display: inline-block;
+        background: rgba(34, 197, 94, 0.2);
+        color: #22c55e;
+        padding: 0.2rem 0.6rem;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        margin-top: 0.5rem;
+    }
+    
+    /* Floating action */
+    .floating-stats {
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        background: rgba(15, 15, 35, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 15px;
+        padding: 1rem;
+        backdrop-filter: blur(10px);
+        z-index: 100;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
+# ============== CACHING & OPTIMIZATION ==============
+
+# Thread pool for parallel operations
+executor = ThreadPoolExecutor(max_workers=4)
+
+# Response cache for instant replies
+@st.cache_data(ttl=3600, max_entries=1000)
+def get_cached_response(query_hash: str):
+    """Get cached response if available."""
+    return None
+
+def cache_response(query: str, response: dict):
+    """Cache a response for future use."""
+    if 'response_cache' not in st.session_state:
+        st.session_state.response_cache = {}
+    
+    query_hash = hashlib.md5(query.lower().strip().encode()).hexdigest()
+    st.session_state.response_cache[query_hash] = {
+        'response': response,
+        'timestamp': time.time()
+    }
+
+def get_response_from_cache(query: str):
+    """Check if response is in cache."""
+    if 'response_cache' not in st.session_state:
+        return None
+    
+    query_hash = hashlib.md5(query.lower().strip().encode()).hexdigest()
+    cached = st.session_state.response_cache.get(query_hash)
+    
+    if cached and (time.time() - cached['timestamp']) < 3600:  # 1 hour cache
+        return cached['response']
+    return None
+
+
 def init_session_state():
     """Initialize session state variables."""
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-    if 'rag_retriever' not in st.session_state:
-        st.session_state.rag_retriever = None
-    if 'llm_handler' not in st.session_state:
-        st.session_state.llm_handler = None
-    if 'vision_handler' not in st.session_state:
-        st.session_state.vision_handler = None
-    if 'chat_history' not in st.session_state:
-        st.session_state.chat_history = []
-    if 'query_analytics' not in st.session_state:
-        st.session_state.query_analytics = []
-    if 'conversation_memory' not in st.session_state:
-        st.session_state.conversation_memory = []  # For follow-up questions
-    if 'last_context' not in st.session_state:
-        st.session_state.last_context = ""  # Store last retrieved context
-    if 'system_initialized' not in st.session_state:
-        st.session_state.system_initialized = False
-    if 'total_queries' not in st.session_state:
-        st.session_state.total_queries = 0
-    if 'avg_response_time' not in st.session_state:
-        st.session_state.avg_response_time = 0
-    if 'successful_queries' not in st.session_state:
-        st.session_state.successful_queries = 0
+    defaults = {
+        'messages': [],
+        'rag_retriever': None,
+        'llm_handler': None,
+        'chat_history': [],
+        'query_analytics': [],
+        'conversation_memory': [],
+        'last_context': "",
+        'system_initialized': False,
+        'total_queries': 0,
+        'avg_response_time': 0,
+        'successful_queries': 0,
+        'response_cache': {},
+        'prompt_handler': None
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def initialize_rag_system():
     """Initialize RAG system with caching."""
     try:
@@ -213,11 +402,10 @@ def initialize_rag_system():
         retriever.initialize()
         return retriever
     except Exception as e:
-        st.error(f"Failed to initialize RAG system: {e}")
         return None
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def initialize_llm_handler():
     """Initialize LLM handler with caching."""
     try:
@@ -229,430 +417,55 @@ def initialize_llm_handler():
             ollama_model=llm_config.ollama_model,
             openai_api_key=llm_config.openai_api_key,
             openai_model=llm_config.openai_model,
-            max_tokens=llm_config.max_tokens,
-            temperature=llm_config.temperature
+            max_tokens=256,  # Reduced for faster responses
+            temperature=llm_config.temperature,
+            timeout=15  # Faster timeout
         )
         
         return handler
     except Exception as e:
-        st.error(f"Failed to initialize LLM handler: {e}")
         return None
 
 
-@st.cache_resource
-def initialize_vision_handler():
-    """Initialize Vision handler with caching."""
+@st.cache_resource(show_spinner=False)
+def initialize_prompt_handler():
+    """Initialize prompt handler for edge cases."""
+    return PromptHandler()
+
+
+# ============== FAST RESPONSE GENERATION ==============
+
+def quick_rag_retrieve(query: str, top_k: int = 2):
+    """Fast RAG retrieval with reduced chunks."""
+    if not st.session_state.rag_retriever:
+        return "", [], 0
+    
     try:
-        config = load_config()
-        vision_config = config.vision
-        
-        handler = VisionHandler(
-            model_type=vision_config.model_name,
-            device=vision_config.device,
-            max_image_size=vision_config.max_image_size,
-            num_tags=vision_config.num_tags
-        )
-        
-        return handler
-    except Exception as e:
-        st.error(f"Failed to initialize Vision handler: {e}")
-        return None
+        response = st.session_state.rag_retriever.retrieve(query, top_k=top_k)
+        return response.context[:1500], response.sources[:3], response.confidence
+    except:
+        return "", [], 0
 
 
-def render_sidebar():
-    """Render sidebar with controls and info."""
-    with st.sidebar:
-        st.markdown("## 🎛️ Control Panel")
-        st.markdown("---")
-        
-        # System Status
-        st.markdown("### 📊 System Status")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.session_state.rag_retriever:
-                st.success("RAG ✓")
-            else:
-                st.error("RAG ✗")
-        
-        with col2:
-            if st.session_state.llm_handler:
-                provider = st.session_state.llm_handler.get_available_provider()
-                st.success(f"LLM ✓")
-            else:
-                st.error("LLM ✗")
-        
-        st.markdown("---")
-        
-        # Settings
-        st.markdown("### ⚙️ Settings")
-        
-        top_k = st.slider("Number of context chunks", 1, 10, 3, key="top_k_slider")
-        temperature = st.slider("LLM Temperature", 0.0, 1.0, 0.7, 0.1, key="temp_slider")
-        
-        st.markdown("---")
-        
-        # Quick Actions
-        st.markdown("### 🚀 Quick Actions")
-        
-        if st.button("🔄 Reinitialize System", use_container_width=True):
-            st.cache_resource.clear()
-            st.session_state.system_initialized = False
-            st.rerun()
-        
-        if st.button("🗑️ Clear Chat History", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.chat_history = []
-            st.session_state.conversation_memory = []
-            st.session_state.last_context = ""
-            st.rerun()
-        
-        if st.button("📊 Reset Analytics", use_container_width=True):
-            st.session_state.query_analytics = []
-            st.session_state.total_queries = 0
-            st.session_state.avg_response_time = 0
-            st.session_state.successful_queries = 0
-            st.rerun()
-        
-        st.markdown("---")
-        
-        # Memory Status
-        st.markdown("### 🧠 Conversation Memory")
-        memory_count = len(st.session_state.get('conversation_memory', []))
-        st.metric("Exchanges Remembered", f"{memory_count}/10")
-        if memory_count > 0:
-            st.caption("Bot remembers recent conversation for follow-up questions")
-        
-        st.markdown("---")
-        
-        # Info Section
-        st.markdown("### ℹ️ About")
-        st.info("""
-        **GenAI RAG Assistant**
-        
-        A powerful chatbot powered by:
-        - 🔍 RAG (Retrieval-Augmented Generation)
-        - 🧠 LLM (Ollama/OpenAI)
-        - 💬 Conversation Memory
-        - 👁️ Vision Processing
-        
-        Ask questions & follow-ups!
-        """)
-        
-        # Knowledge Base Stats
-        if st.session_state.rag_retriever:
-            stats = st.session_state.rag_retriever.vector_store.get_stats()
-            st.markdown("### 📚 Knowledge Base")
-            st.metric("Documents", stats.get('total_documents', 0))
-            st.metric("Chunks", stats.get('total_chunks', 0))
-
-
-def render_metrics_dashboard():
-    """Render the metrics dashboard."""
-    st.markdown("### 📈 Analytics Dashboard")
+def generate_fast_response(query: str, context: str, conversation_history: str = "") -> str:
+    """Generate response with optimized prompting."""
     
-    col1, col2, col3, col4 = st.columns(4)
+    # Concise system prompt for faster inference
+    system_prompt = """You are a helpful AI assistant. Answer concisely and accurately based on the context provided. If unsure, say so briefly."""
     
-    with col1:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-value">{}</div>
-            <div class="metric-label">Total Queries</div>
-        </div>
-        """.format(st.session_state.total_queries), unsafe_allow_html=True)
-    
-    with col2:
-        success_rate = (st.session_state.successful_queries / max(st.session_state.total_queries, 1)) * 100
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-value">{:.1f}%</div>
-            <div class="metric-label">Success Rate</div>
-        </div>
-        """.format(success_rate), unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-value">{:.2f}s</div>
-            <div class="metric-label">Avg Response Time</div>
-        </div>
-        """.format(st.session_state.avg_response_time), unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown("""
-        <div class="metric-card">
-            <div class="metric-value">{}</div>
-            <div class="metric-label">Chat Messages</div>
-        </div>
-        """.format(len(st.session_state.messages)), unsafe_allow_html=True)
-
-
-def render_chat_interface(prompt=None):
-    """Render the main chat interface."""
-    st.markdown("### 💬 Chat with Your Knowledge Base")
-    
-    # Display chat messages
-    chat_container = st.container()
-    
-    with chat_container:
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                with st.chat_message("user", avatar="👤"):
-                    st.markdown(message["content"])
-            else:
-                with st.chat_message("assistant", avatar="🤖"):
-                    st.markdown(message["content"])
-                    
-                    # Show sources if available
-                    if "sources" in message and message["sources"]:
-                        with st.expander("📚 View Sources", expanded=False):
-                            for i, source in enumerate(message["sources"], 1):
-                                st.markdown(f"""
-                                <div class="source-card">
-                                    <strong>Source {i}:</strong> {source.get('source', 'Unknown')}<br>
-                                    <small>Relevance: {source.get('score', 0):.2%}</small>
-                                </div>
-                                """, unsafe_allow_html=True)
-                    
-                    # Show response time
-                    if "response_time" in message:
-                        st.caption(f"⏱️ Response time: {message['response_time']:.2f}s")
-    
-    # Process chat input if provided
-    if prompt:
-        process_query(prompt)
-
-
-def process_query(query: str):
-    """Process user query through RAG pipeline with edge case handling."""
-    # Add user message
-    st.session_state.messages.append({"role": "user", "content": query})
-    
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(query)
-    
-    # Initialize prompt handler
-    handler = PromptHandler()
-    
-    # Process with edge case detection
-    with st.chat_message("assistant", avatar="🤖"):
-        start_time = time.time()
-        
-        # First, analyze the query for edge cases
-        analysis = handler.analyze_query(query)
-        
-        # Handle edge cases with direct responses
-        if not analysis.should_use_rag and analysis.direct_response:
-            response_time = time.time() - start_time
-            
-            # Display the direct response
-            st.markdown(analysis.direct_response)
-            
-            # Show query type badge
-            emoji = handler.get_query_type_emoji(analysis.query_type)
-            st.caption(f"{emoji} Query type: {analysis.query_type.value} | ⏱️ {response_time:.2f}s")
-            
-            # Store message
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": analysis.direct_response,
-                "sources": [],
-                "response_time": response_time,
-                "confidence": analysis.confidence,
-                "query_type": analysis.query_type.value
-            })
-            
-            # Update analytics
-            st.session_state.total_queries += 1
-            st.session_state.successful_queries += 1
-            
-            analytics = st.session_state.query_analytics
-            analytics.append({
-                "query": query,
-                "response_time": response_time,
-                "confidence": analysis.confidence,
-                "success": True,
-                "query_type": analysis.query_type.value,
-                "timestamp": datetime.now().isoformat()
-            })
-            st.session_state.query_analytics = analytics
-            st.session_state.avg_response_time = sum(a["response_time"] for a in analytics) / len(analytics)
-            return
-        
-        # Normal RAG processing
-        with st.spinner("🔍 Searching knowledge base & generating answer..."):
-            try:
-                # Build conversation history for context
-                conversation_history = build_conversation_history()
-                
-                # Check if this might be a follow-up question
-                is_followup = is_followup_question(query)
-                
-                # Use enhanced query if available
-                search_query = analysis.modified_query or query
-                
-                # Retrieve relevant context
-                context = ""
-                sources = []
-                confidence = 0
-                
-                if st.session_state.rag_retriever:
-                    # For follow-up questions, also include the original query context
-                    if is_followup and st.session_state.conversation_memory:
-                        # Enhance query with previous context
-                        last_query = st.session_state.conversation_memory[-1].get('query', '')
-                        search_query = f"{last_query} {search_query}"
-                    
-                    rag_response = st.session_state.rag_retriever.retrieve(
-                        search_query,
-                        top_k=st.session_state.get('top_k_slider', 3)
-                    )
-                    context = rag_response.context
-                    sources = rag_response.sources
-                    confidence = rag_response.confidence
-                    
-                    # Store context for follow-up questions
-                    st.session_state.last_context = context
-                
-                # If low confidence on follow-up, use previous context
-                if is_followup and confidence < 0.3 and st.session_state.last_context:
-                    context = st.session_state.last_context
-                    confidence = 0.5  # Moderate confidence for reused context
-                
-                # Generate response with LLM (always try to generate an answer)
-                answer = generate_answer_with_memory(query, context, conversation_history)
-                success = True
-                
-                response_time = time.time() - start_time
-                
-                # Display response
-                st.markdown(answer)
-                
-                # Show sources only if they were found
-                if sources and confidence > 0.2:
-                    with st.expander("📚 View Sources (Optional)", expanded=False):
-                        for i, source in enumerate(sources, 1):
-                            st.markdown(f"""
-                            <div class="source-card">
-                                <strong>Source {i}:</strong> {source.get('source', 'Unknown')}<br>
-                                <small>Relevance: {source.get('score', 0):.2%}</small>
-                            </div>
-                            """, unsafe_allow_html=True)
-                
-                st.caption(f"✅ Query type: normal | ⏱️ {response_time:.2f}s")
-                
-                # Store message
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer,
-                    "sources": sources,
-                    "response_time": response_time,
-                    "confidence": confidence,
-                    "query_type": "normal"
-                })
-                
-                # Update conversation memory (keep last 10 exchanges)
-                st.session_state.conversation_memory.append({
-                    "query": query,
-                    "answer": answer,
-                    "context": context[:500] if context else ""  # Store truncated context
-                })
-                if len(st.session_state.conversation_memory) > 10:
-                    st.session_state.conversation_memory = st.session_state.conversation_memory[-10:]
-                
-                # Update analytics
-                st.session_state.total_queries += 1
-                if success:
-                    st.session_state.successful_queries += 1
-                
-                # Update average response time
-                analytics = st.session_state.query_analytics
-                analytics.append({
-                    "query": query,
-                    "response_time": response_time,
-                    "confidence": confidence,
-                    "success": success,
-                    "query_type": "normal",
-                    "timestamp": datetime.now().isoformat()
-                })
-                st.session_state.query_analytics = analytics
-                st.session_state.avg_response_time = sum(a["response_time"] for a in analytics) / len(analytics)
-                
-            except Exception as e:
-                st.error(f"Error processing query: {e}")
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": f"Sorry, I encountered an error: {str(e)}"
-                })
-
-
-def build_conversation_history() -> str:
-    """Build conversation history string from memory."""
-    if not st.session_state.conversation_memory:
-        return ""
-    
-    history_parts = []
-    for i, exchange in enumerate(st.session_state.conversation_memory[-5:], 1):  # Last 5 exchanges
-        history_parts.append(f"User: {exchange['query']}")
-        history_parts.append(f"Assistant: {exchange['answer'][:200]}...")  # Truncate long answers
-    
-    return "\n".join(history_parts)
-
-
-def is_followup_question(query: str) -> bool:
-    """Detect if query is likely a follow-up question."""
-    followup_indicators = [
-        'it', 'this', 'that', 'they', 'them', 'these', 'those',
-        'what about', 'how about', 'and', 'also', 'more', 'else',
-        'why', 'can you', 'could you', 'tell me more', 'explain',
-        'what is', 'what are', 'elaborate', 'clarify', 'another',
-        'same', 'similar', 'related', 'previous', 'last', 'again'
-    ]
-    
-    query_lower = query.lower().strip()
-    
-    # Short queries are often follow-ups
-    if len(query_lower.split()) <= 4:
-        return True
-    
-    # Check for follow-up indicators
-    for indicator in followup_indicators:
-        if query_lower.startswith(indicator) or f" {indicator} " in query_lower:
-            return True
-    
-    return False
-
-
-def generate_answer_with_memory(query: str, context: str, conversation_history: str) -> str:
-    """Generate answer using LLM with conversation memory."""
-    
-    # Build the prompt with memory
-    system_prompt = """You are a helpful AI assistant with access to a knowledge base. 
-Your task is to provide clear, informative, and helpful answers to user questions.
-
-Guidelines:
-1. If context from the knowledge base is provided, use it to give accurate answers
-2. If no relevant context is found, use your general knowledge to help the user
-3. Remember the conversation history to answer follow-up questions
-4. Be conversational and friendly
-5. If you're not sure about something, say so honestly
-6. Provide complete, useful answers - not just references to documents"""
-
-    # Build the full prompt
+    # Build minimal prompt
     prompt_parts = []
     
-    if conversation_history:
-        prompt_parts.append(f"=== CONVERSATION HISTORY ===\n{conversation_history}\n")
-    
     if context:
-        prompt_parts.append(f"=== RELEVANT KNOWLEDGE BASE CONTEXT ===\n{context}\n")
+        prompt_parts.append(f"Context:\n{context[:1000]}\n")
     
-    prompt_parts.append(f"=== CURRENT QUESTION ===\n{query}")
-    prompt_parts.append("\n=== YOUR RESPONSE ===\nProvide a helpful, complete answer:")
+    if conversation_history:
+        prompt_parts.append(f"Recent chat:\n{conversation_history[-500:]}\n")
+    
+    prompt_parts.append(f"Question: {query}\n\nAnswer:")
     
     full_prompt = "\n".join(prompt_parts)
     
-    # Try to use LLM handler
     if st.session_state.llm_handler:
         try:
             response = st.session_state.llm_handler.generate(
@@ -661,400 +474,432 @@ Guidelines:
             )
             if response.success and response.content:
                 return response.content
-        except Exception as e:
-            st.warning(f"LLM generation issue: {e}")
+        except:
+            pass
     
-    # Fallback: Generate a helpful response without LLM
-    return generate_fallback_response(query, context, conversation_history)
-
-
-def generate_fallback_response(query: str, context: str, conversation_history: str) -> str:
-    """Generate a response when LLM is not available."""
-    
+    # Fallback response
     if context:
-        # Extract the most relevant part of context
-        context_sentences = context.split('.')
-        relevant_sentences = []
-        query_words = set(query.lower().split())
-        
-        for sentence in context_sentences:
-            sentence_words = set(sentence.lower().split())
-            if query_words & sentence_words:  # If there's overlap
-                relevant_sentences.append(sentence.strip())
-        
-        if relevant_sentences:
-            answer = "Based on the knowledge base, here's what I found:\n\n"
-            answer += ". ".join(relevant_sentences[:3]) + "."
-            
-            if len(context_sentences) > 3:
-                answer += "\n\nWould you like me to provide more details on any specific aspect?"
-            
-            return answer
-        else:
-            return f"Here's relevant information from the knowledge base:\n\n{context[:800]}"
+        sentences = [s.strip() for s in context.split('.') if len(s.strip()) > 20][:3]
+        return "Based on the knowledge base:\n\n" + ". ".join(sentences) + "."
     
-    # No context available
-    return """I don't have specific information about that in my knowledge base. 
+    return "I couldn't find specific information about that. Please try rephrasing your question."
 
-However, I'd be happy to help if you could:
-1. Rephrase your question with more specific terms
-2. Ask about a different topic
-3. Provide more context about what you're looking for
 
-What would you like to know?"""
+# ============== UI COMPONENTS ==============
+
+def render_header():
+    """Render modern header."""
+    st.markdown("""
+    <div class="main-header">
+        <div class="main-title">🤖 AI Knowledge Assistant</div>
+        <div class="main-subtitle">Powered by RAG • Fast & Intelligent Responses</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_status_bar():
+    """Render status indicators."""
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        rag_status = "status-online" if st.session_state.rag_retriever else "status-offline"
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">🔍</div>
+            <div class="stat-label">RAG System</div>
+            <span class="status-badge {rag_status}">{'● Active' if st.session_state.rag_retriever else '○ Offline'}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        llm_status = "status-online" if st.session_state.llm_handler else "status-offline"
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">🧠</div>
+            <div class="stat-label">LLM Engine</div>
+            <span class="status-badge {llm_status}">{'● Ready' if st.session_state.llm_handler else '○ Offline'}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        avg_time = st.session_state.avg_response_time
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">⚡</div>
+            <div class="stat-label">Avg Response</div>
+            <span class="status-badge status-online">{avg_time:.1f}s</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        queries = st.session_state.total_queries
+        st.markdown(f"""
+        <div class="stat-card">
+            <div class="stat-value">📊</div>
+            <div class="stat-label">Total Queries</div>
+            <span class="status-badge status-online">{queries}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_quick_actions():
+    """Render quick action buttons."""
+    st.markdown("#### 💡 Quick Questions")
+    
+    quick_questions = [
+        "What services do you offer?",
+        "Tell me about refund policy",
+        "How to get started?",
+        "Technical documentation",
+        "Contact support"
+    ]
+    
+    cols = st.columns(len(quick_questions))
+    for i, question in enumerate(quick_questions):
+        with cols[i]:
+            if st.button(f"📌 {question[:20]}...", key=f"quick_{i}", use_container_width=True):
+                st.session_state.quick_question = question
+
+
+def render_chat_messages():
+    """Render chat messages with modern styling."""
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            with st.chat_message("user", avatar="👤"):
+                st.markdown(f"""<div class="user-bubble">{msg["content"]}</div>""", unsafe_allow_html=True)
+        else:
+            with st.chat_message("assistant", avatar="🤖"):
+                st.markdown(msg["content"])
+                
+                # Show metadata
+                meta_parts = []
+                if "response_time" in msg:
+                    meta_parts.append(f"⚡ {msg['response_time']:.2f}s")
+                if "query_type" in msg:
+                    meta_parts.append(f"📝 {msg['query_type']}")
+                if "confidence" in msg and msg["confidence"] > 0:
+                    meta_parts.append(f"🎯 {msg['confidence']:.0%}")
+                
+                if meta_parts:
+                    st.caption(" • ".join(meta_parts))
+                
+                # Show sources
+                if msg.get("sources"):
+                    with st.expander("📚 Sources", expanded=False):
+                        for i, src in enumerate(msg["sources"][:3], 1):
+                            st.markdown(f"""
+                            <div class="source-card">
+                                <strong>{i}.</strong> {Path(src.get('source', 'Unknown')).name}
+                                <small style="float:right; color: #6366f1;">{src.get('score', 0):.0%}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+
+def process_query_fast(query: str):
+    """Process query with optimized speed."""
+    start_time = time.time()
+    
+    # Add user message immediately
+    st.session_state.messages.append({"role": "user", "content": query})
+    
+    # Check cache first
+    cached = get_response_from_cache(query)
+    if cached:
+        response_time = time.time() - start_time
+        cached['response_time'] = response_time
+        cached['from_cache'] = True
+        st.session_state.messages.append(cached)
+        update_analytics(query, response_time, True, "cached", cached.get('confidence', 0.9))
+        return
+    
+    # Initialize prompt handler
+    handler = st.session_state.prompt_handler or PromptHandler()
+    
+    # Quick edge case check
+    analysis = handler.analyze_query(query)
+    
+    if not analysis.should_use_rag and analysis.direct_response:
+        # Instant response for edge cases
+        response_time = time.time() - start_time
+        response = {
+            "role": "assistant",
+            "content": analysis.direct_response,
+            "sources": [],
+            "response_time": response_time,
+            "confidence": analysis.confidence,
+            "query_type": analysis.query_type.value
+        }
+        st.session_state.messages.append(response)
+        cache_response(query, response)
+        update_analytics(query, response_time, True, analysis.query_type.value, analysis.confidence)
+        return
+    
+    # RAG + LLM processing
+    try:
+        # Fast retrieval (reduced chunks)
+        context, sources, confidence = quick_rag_retrieve(
+            analysis.modified_query or query, 
+            top_k=2
+        )
+        
+        # Check for follow-up and use cached context
+        if is_followup_question(query) and not context and st.session_state.last_context:
+            context = st.session_state.last_context
+            confidence = 0.6
+        
+        # Build minimal conversation history
+        conv_history = ""
+        if st.session_state.conversation_memory:
+            last = st.session_state.conversation_memory[-1]
+            conv_history = f"Q: {last.get('query', '')}\nA: {last.get('answer', '')[:200]}"
+        
+        # Generate response
+        answer = generate_fast_response(query, context, conv_history)
+        
+        response_time = time.time() - start_time
+        
+        response = {
+            "role": "assistant",
+            "content": answer,
+            "sources": sources,
+            "response_time": response_time,
+            "confidence": confidence,
+            "query_type": "rag"
+        }
+        
+        st.session_state.messages.append(response)
+        
+        # Update memory
+        st.session_state.conversation_memory.append({
+            "query": query,
+            "answer": answer[:300],
+            "context": context[:300] if context else ""
+        })
+        if len(st.session_state.conversation_memory) > 5:  # Keep only 5 for speed
+            st.session_state.conversation_memory = st.session_state.conversation_memory[-5:]
+        
+        st.session_state.last_context = context
+        
+        # Cache the response
+        cache_response(query, response)
+        update_analytics(query, response_time, True, "rag", confidence)
+        
+    except Exception as e:
+        response_time = time.time() - start_time
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": f"I encountered an issue processing your request. Please try again.",
+            "response_time": response_time,
+            "query_type": "error"
+        })
+        update_analytics(query, response_time, False, "error", 0)
+
+
+def is_followup_question(query: str) -> bool:
+    """Fast follow-up detection."""
+    q = query.lower()
+    indicators = ['it', 'this', 'that', 'more', 'also', 'what about', 'how about', 'why', 'can you']
+    return len(q.split()) <= 4 or any(q.startswith(i) for i in indicators)
+
+
+def update_analytics(query: str, response_time: float, success: bool, query_type: str, confidence: float):
+    """Update analytics data."""
+    st.session_state.total_queries += 1
+    if success:
+        st.session_state.successful_queries += 1
+    
+    analytics = st.session_state.query_analytics
+    analytics.append({
+        "query": query[:50],
+        "response_time": response_time,
+        "confidence": confidence,
+        "success": success,
+        "query_type": query_type,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Keep only last 100 analytics
+    if len(analytics) > 100:
+        analytics = analytics[-100:]
+    
+    st.session_state.query_analytics = analytics
+    st.session_state.avg_response_time = sum(a["response_time"] for a in analytics[-20:]) / min(len(analytics), 20)
 
 
 def render_analytics_tab():
-    """Render the analytics tab with visualizations."""
-    st.markdown("### 📊 Query Analytics")
+    """Render analytics dashboard."""
+    st.markdown("### 📊 Performance Analytics")
     
     if not st.session_state.query_analytics:
-        st.info("No queries yet. Start chatting to see analytics!")
+        st.info("No analytics data yet. Start chatting to see performance metrics!")
         return
     
-    analytics_df = pd.DataFrame(st.session_state.query_analytics)
+    df = pd.DataFrame(st.session_state.query_analytics)
     
-    # Query Type Distribution (if available)
-    if 'query_type' in analytics_df.columns:
-        st.markdown("#### 🏷️ Query Type Distribution")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            type_counts = analytics_df['query_type'].value_counts()
-            fig = px.pie(
-                values=type_counts.values,
-                names=type_counts.index,
-                title="Query Types",
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font_color='#1a1a2e'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Query type bar chart
-            fig = px.bar(
-                x=type_counts.index,
-                y=type_counts.values,
-                title="Query Types Count",
-                labels={"x": "Type", "y": "Count"},
-                color=type_counts.index,
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            fig.update_layout(
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font_color='#1a1a2e',
-                showlegend=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("---")
-    
-    # Response Time Chart
+    # Response time chart
     col1, col2 = st.columns(2)
     
     with col1:
-        fig = px.line(
-            analytics_df, 
-            y="response_time",
-            title="Response Time Over Queries",
-            labels={"index": "Query #", "response_time": "Time (s)"}
-        )
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            y=df['response_time'],
+            mode='lines+markers',
+            name='Response Time',
+            line=dict(color='#6366f1', width=2),
+            marker=dict(size=8)
+        ))
         fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
+            title="Response Time Trend",
+            yaxis_title="Seconds",
+            template="plotly_dark",
             paper_bgcolor='rgba(0,0,0,0)',
-            font_color='#1a1a2e'
-        )
-        fig.update_traces(line_color='#667eea', line_width=3)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = px.line(
-            analytics_df,
-            y="confidence",
-            title="Confidence Score Over Queries",
-            labels={"index": "Query #", "confidence": "Confidence"}
-        )
-        fig.update_layout(
             plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='#1a1a2e'
-        )
-        fig.update_traces(line_color='#764ba2', line_width=3)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Success Rate Pie Chart
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        success_counts = analytics_df['success'].value_counts()
-        fig = px.pie(
-            values=success_counts.values,
-            names=['Successful' if x else 'Failed' for x in success_counts.index],
-            title="Query Success Rate",
-            color_discrete_sequence=['#667eea', '#ff6b6b']
-        )
-        fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font_color='#1a1a2e'
+            height=300
         )
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
-        # Response Time Distribution
-        fig = px.histogram(
-            analytics_df,
-            x="response_time",
-            nbins=20,
-            title="Response Time Distribution",
-            labels={"response_time": "Time (s)", "count": "Count"}
-        )
+        query_types = df['query_type'].value_counts()
+        fig = go.Figure(data=[go.Pie(
+            labels=query_types.index,
+            values=query_types.values,
+            hole=0.4,
+            marker_colors=['#6366f1', '#a855f7', '#ec4899', '#22c55e']
+        )])
         fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
+            title="Query Types",
+            template="plotly_dark",
             paper_bgcolor='rgba(0,0,0,0)',
-            font_color='#1a1a2e'
+            height=300
         )
-        fig.update_traces(marker_color='#667eea')
         st.plotly_chart(fig, use_container_width=True)
     
-    # Query History Table
-    st.markdown("### 📋 Query History")
-    display_df = analytics_df[['query', 'response_time', 'confidence', 'success', 'timestamp']].copy()
-    display_df['response_time'] = display_df['response_time'].round(2)
-    display_df['confidence'] = (display_df['confidence'] * 100).round(1).astype(str) + '%'
-    display_df.columns = ['Query', 'Response Time (s)', 'Confidence', 'Success', 'Timestamp']
-    st.dataframe(display_df, use_container_width=True)
+    # Stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Queries", len(df))
+    with col2:
+        st.metric("Avg Response", f"{df['response_time'].mean():.2f}s")
+    with col3:
+        st.metric("Success Rate", f"{(df['success'].sum() / len(df) * 100):.1f}%")
+    with col4:
+        st.metric("Avg Confidence", f"{df['confidence'].mean():.0%}")
 
 
 def render_knowledge_base_tab():
-    """Render the knowledge base explorer tab."""
-    st.markdown("### 📚 Knowledge Base Explorer")
+    """Render knowledge base explorer."""
+    st.markdown("### 📚 Knowledge Base")
     
-    kb_path = Path(__file__).parent / "knowledge_base"
-    
-    if not kb_path.exists():
-        st.warning("Knowledge base directory not found!")
+    if not st.session_state.rag_retriever:
+        st.warning("RAG system not initialized")
         return
     
-    # List documents
-    docs = list(kb_path.glob("*.md")) + list(kb_path.glob("*.txt"))
-    
-    if not docs:
-        st.info("No documents in knowledge base. Add .md or .txt files to get started!")
-        return
-    
-    # Document selector
-    selected_doc = st.selectbox(
-        "Select a document to view",
-        docs,
-        format_func=lambda x: x.name
-    )
-    
-    if selected_doc:
-        with open(selected_doc, 'r', encoding='utf-8') as f:
-            content = f.read()
+    try:
+        stats = st.session_state.rag_retriever.vector_store.get_stats()
         
-        col1, col2 = st.columns([2, 1])
-        
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown("#### 📄 Document Content")
-            st.markdown(f"```markdown\n{content[:2000]}{'...' if len(content) > 2000 else ''}\n```")
-        
+            st.metric("📄 Documents", stats.get('total_documents', 0))
         with col2:
-            st.markdown("#### 📊 Document Stats")
-            words = len(content.split())
-            chars = len(content)
-            lines = len(content.split('\n'))
-            
-            st.metric("Words", words)
-            st.metric("Characters", chars)
-            st.metric("Lines", lines)
-            
-            # Word cloud visualization (simplified)
-            st.markdown("#### 🏷️ Key Terms")
-            # Extract simple word frequency
-            words_list = content.lower().split()
-            word_freq = {}
-            stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 
-                         'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 
-                         'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 
-                         'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 
-                         'into', 'through', 'during', 'before', 'after', 'above', 'below',
-                         'and', 'or', 'but', 'if', 'then', 'else', 'when', 'up', 'down',
-                         'out', 'off', 'over', 'under', 'again', 'further', 'once', 'that',
-                         'this', 'these', 'those', 'it', 'its', 'you', 'your', 'we', 'our'}
-            
-            for word in words_list:
-                word = ''.join(c for c in word if c.isalnum())
-                if word and len(word) > 3 and word not in stop_words:
-                    word_freq[word] = word_freq.get(word, 0) + 1
-            
-            top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]
-            
-            if top_words:
-                fig = px.bar(
-                    x=[w[1] for w in top_words],
-                    y=[w[0] for w in top_words],
-                    orientation='h',
-                    labels={'x': 'Count', 'y': 'Word'}
-                )
-                fig.update_layout(
-                    height=300,
-                    plot_bgcolor='rgba(0,0,0,0)',
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font_color='#1a1a2e',
-                    showlegend=False
-                )
-                fig.update_traces(marker_color='#667eea')
-                st.plotly_chart(fig, use_container_width=True)
-
-
-def render_vision_tab():
-    """Render the vision/image processing tab."""
-    st.markdown("### 👁️ Image Analysis")
-    
-    st.info("Upload an image to analyze it using the vision model.")
-    
-    uploaded_file = st.file_uploader(
-        "Choose an image",
-        type=['jpg', 'jpeg', 'png', 'webp'],
-        help="Upload an image for analysis"
-    )
-    
-    if uploaded_file:
-        col1, col2 = st.columns(2)
+            st.metric("🧩 Chunks", stats.get('total_chunks', 0))
+        with col3:
+            st.metric("📏 Avg Chunk Size", f"{stats.get('avg_chunk_size', 0):.0f}")
         
-        with col1:
-            st.markdown("#### 🖼️ Uploaded Image")
-            st.image(uploaded_file, use_container_width=True)
-        
-        with col2:
-            st.markdown("#### 🔍 Analysis Results")
-            
-            if st.button("🔬 Analyze Image", use_container_width=True):
-                with st.spinner("Analyzing image..."):
-                    try:
-                        if st.session_state.vision_handler:
-                            # Read image bytes
-                            image_bytes = uploaded_file.getvalue()
-                            
-                            # Process image
-                            result = st.session_state.vision_handler.process_image_bytes(
-                                image_bytes,
-                                generate_tags=True
-                            )
-                            
-                            if result.success:
-                                st.success("Analysis complete!")
-                                
-                                st.markdown(f"**📝 Caption:** {result.caption}")
-                                st.markdown(f"**🏷️ Tags:** {', '.join(f'`{tag}`' for tag in result.tags)}")
-                                st.markdown(f"**⏱️ Processing Time:** {result.processing_time:.2f}s")
-                                
-                                # Image info
-                                with st.expander("📊 Image Details"):
-                                    for key, value in result.image_info.items():
-                                        st.markdown(f"- **{key}:** {value}")
-                            else:
-                                st.error(f"Analysis failed: {result.error}")
-                        else:
-                            st.warning("Vision handler not initialized. Please check your configuration.")
-                    except Exception as e:
-                        st.error(f"Error analyzing image: {e}")
+        # List documents
+        kb_path = Path(project_root / "knowledge_base")
+        if kb_path.exists():
+            st.markdown("#### Available Documents")
+            for doc in kb_path.glob("*.md"):
+                with st.expander(f"📄 {doc.name}"):
+                    content = doc.read_text()[:500]
+                    st.text(content + "...")
+    except Exception as e:
+        st.error(f"Error loading knowledge base: {e}")
 
 
 def render_settings_tab():
-    """Render the settings tab."""
-    st.markdown("### ⚙️ System Configuration")
+    """Render settings panel."""
+    st.markdown("### ⚙️ Settings")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("#### 🔧 RAG Settings")
+        st.markdown("#### System Controls")
         
-        config = load_config()
+        if st.button("🔄 Reinitialize System", use_container_width=True):
+            st.cache_resource.clear()
+            st.session_state.response_cache = {}
+            st.rerun()
         
-        st.text_input("Embedding Model", value=config.rag.embedding_model, disabled=True)
-        st.number_input("Chunk Size", value=config.rag.chunk_size, disabled=True)
-        st.number_input("Chunk Overlap", value=config.rag.chunk_overlap, disabled=True)
-        st.number_input("Top K Results", value=config.rag.top_k, disabled=True)
-        st.number_input("Similarity Threshold", value=config.rag.similarity_threshold, disabled=True)
+        if st.button("🗑️ Clear Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.conversation_memory = []
+            st.session_state.last_context = ""
+            st.rerun()
+        
+        if st.button("📊 Reset Analytics", use_container_width=True):
+            st.session_state.query_analytics = []
+            st.session_state.total_queries = 0
+            st.session_state.successful_queries = 0
+            st.session_state.avg_response_time = 0
+            st.rerun()
+        
+        if st.button("🧹 Clear Cache", use_container_width=True):
+            st.session_state.response_cache = {}
+            st.success("Cache cleared!")
     
     with col2:
-        st.markdown("#### 🧠 LLM Settings")
+        st.markdown("#### System Info")
         
-        st.text_input("Ollama Base URL", value=config.llm.ollama_base_url, disabled=True)
-        st.text_input("Ollama Model", value=config.llm.ollama_model, disabled=True)
-        st.number_input("Max Tokens", value=config.llm.max_tokens, disabled=True)
-        st.number_input("Temperature", value=config.llm.temperature, disabled=True)
+        st.info(f"""
+        **RAG Status:** {'✅ Active' if st.session_state.rag_retriever else '❌ Offline'}
         
-        # Check LLM availability
-        if st.session_state.llm_handler:
-            provider = st.session_state.llm_handler.get_available_provider()
-            st.success(f"Active Provider: {provider.value}")
-        else:
-            st.warning("LLM Handler not initialized")
-    
-    st.markdown("---")
-    
-    st.markdown("#### 📁 Paths")
-    st.code(f"Knowledge Base: {config.rag.knowledge_base_path}")
-    st.code(f"Vector Store: {config.rag.vector_store_path}")
-    
-    # Export/Import Settings
-    st.markdown("---")
-    st.markdown("#### 💾 Export Analytics")
-    
-    if st.session_state.query_analytics:
-        analytics_json = json.dumps(st.session_state.query_analytics, indent=2)
-        st.download_button(
-            "📥 Download Analytics JSON",
-            analytics_json,
-            file_name=f"analytics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
+        **LLM Status:** {'✅ Ready' if st.session_state.llm_handler else '❌ Offline'}
+        
+        **Cached Responses:** {len(st.session_state.get('response_cache', {}))}
+        
+        **Memory Exchanges:** {len(st.session_state.conversation_memory)}/5
+        """)
 
+
+# ============== MAIN APP ==============
 
 def main():
-    """Main application entry point."""
+    """Main application."""
     init_session_state()
     
-    # Header
-    st.markdown('<h1 class="main-header">🤖 GenAI RAG Assistant</h1>', unsafe_allow_html=True)
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
-    
-    # Initialize systems
+    # Initialize systems in background
     if not st.session_state.system_initialized:
-        with st.spinner("🔄 Initializing AI systems..."):
+        with st.spinner("🚀 Initializing AI systems..."):
             st.session_state.rag_retriever = initialize_rag_system()
             st.session_state.llm_handler = initialize_llm_handler()
-            st.session_state.vision_handler = initialize_vision_handler()
+            st.session_state.prompt_handler = initialize_prompt_handler()
             st.session_state.system_initialized = True
     
-    # Render sidebar
-    render_sidebar()
+    # Render header
+    render_header()
     
-    # Chat input MUST be outside tabs - place it at the top level
-    prompt = st.chat_input("Ask a question about your knowledge base...")
-    
-    # Main content area with tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "💬 Chat",
-        "📊 Analytics", 
-        "📚 Knowledge Base",
-        "👁️ Vision",
-        "⚙️ Settings"
-    ])
+    # Create tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📊 Analytics", "📚 Knowledge Base", "⚙️ Settings"])
     
     with tab1:
-        render_metrics_dashboard()
-        st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
-        render_chat_interface(prompt)
+        render_status_bar()
+        st.markdown("---")
+        
+        # Quick actions
+        render_quick_actions()
+        
+        st.markdown("---")
+        
+        # Chat messages
+        render_chat_messages()
+        
+        # Check for quick question
+        if 'quick_question' in st.session_state and st.session_state.quick_question:
+            query = st.session_state.quick_question
+            st.session_state.quick_question = None
+            process_query_fast(query)
+            st.rerun()
     
     with tab2:
         render_analytics_tab()
@@ -1063,18 +908,12 @@ def main():
         render_knowledge_base_tab()
     
     with tab4:
-        render_vision_tab()
-    
-    with tab5:
         render_settings_tab()
     
-    # Footer
-    st.markdown('<div class="custom-divider"></div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div style="text-align: center; opacity: 0.7; padding: 1rem;">
-        <p>🤖 GenAI RAG Assistant | Built with Streamlit, LangChain & Love ❤️</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Chat input (always at bottom)
+    if prompt := st.chat_input("Ask me anything...", key="main_chat"):
+        process_query_fast(prompt)
+        st.rerun()
 
 
 if __name__ == "__main__":

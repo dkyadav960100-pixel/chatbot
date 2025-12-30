@@ -53,10 +53,10 @@ Follow these guidelines:
         openai_api_key: Optional[str] = None,
         openai_model: str = "gpt-3.5-turbo",
         openai_base_url: str = "https://api.openai.com/v1",
-        max_tokens: int = 512,
+        max_tokens: int = 256,
         temperature: float = 0.7,
-        timeout: int = 30,
-        max_retries: int = 3
+        timeout: int = 15,
+        max_retries: int = 1
     ):
         """
         Initialize LLM handler.
