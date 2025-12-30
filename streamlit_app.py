@@ -24,6 +24,7 @@ from config import load_config, get_config
 from rag.retriever import RAGRetriever
 from llm.llm_handler import LLMHandler
 from vision.vision_handler import VisionHandler
+from prompt_handler import PromptHandler, QueryType, analyze_and_respond
 
 # Page configuration
 st.set_page_config(
@@ -423,17 +424,62 @@ def render_chat_interface(prompt=None):
 
 
 def process_query(query: str):
-    """Process user query through RAG pipeline with conversation memory."""
+    """Process user query through RAG pipeline with edge case handling."""
     # Add user message
     st.session_state.messages.append({"role": "user", "content": query})
     
     with st.chat_message("user", avatar="👤"):
         st.markdown(query)
     
-    # Process with RAG
+    # Initialize prompt handler
+    handler = PromptHandler()
+    
+    # Process with edge case detection
     with st.chat_message("assistant", avatar="🤖"):
         start_time = time.time()
         
+        # First, analyze the query for edge cases
+        analysis = handler.analyze_query(query)
+        
+        # Handle edge cases with direct responses
+        if not analysis.should_use_rag and analysis.direct_response:
+            response_time = time.time() - start_time
+            
+            # Display the direct response
+            st.markdown(analysis.direct_response)
+            
+            # Show query type badge
+            emoji = handler.get_query_type_emoji(analysis.query_type)
+            st.caption(f"{emoji} Query type: {analysis.query_type.value} | ⏱️ {response_time:.2f}s")
+            
+            # Store message
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": analysis.direct_response,
+                "sources": [],
+                "response_time": response_time,
+                "confidence": analysis.confidence,
+                "query_type": analysis.query_type.value
+            })
+            
+            # Update analytics
+            st.session_state.total_queries += 1
+            st.session_state.successful_queries += 1
+            
+            analytics = st.session_state.query_analytics
+            analytics.append({
+                "query": query,
+                "response_time": response_time,
+                "confidence": analysis.confidence,
+                "success": True,
+                "query_type": analysis.query_type.value,
+                "timestamp": datetime.now().isoformat()
+            })
+            st.session_state.query_analytics = analytics
+            st.session_state.avg_response_time = sum(a["response_time"] for a in analytics) / len(analytics)
+            return
+        
+        # Normal RAG processing
         with st.spinner("🔍 Searching knowledge base & generating answer..."):
             try:
                 # Build conversation history for context
@@ -442,6 +488,9 @@ def process_query(query: str):
                 # Check if this might be a follow-up question
                 is_followup = is_followup_question(query)
                 
+                # Use enhanced query if available
+                search_query = analysis.modified_query or query
+                
                 # Retrieve relevant context
                 context = ""
                 sources = []
@@ -449,11 +498,10 @@ def process_query(query: str):
                 
                 if st.session_state.rag_retriever:
                     # For follow-up questions, also include the original query context
-                    search_query = query
                     if is_followup and st.session_state.conversation_memory:
                         # Enhance query with previous context
                         last_query = st.session_state.conversation_memory[-1].get('query', '')
-                        search_query = f"{last_query} {query}"
+                        search_query = f"{last_query} {search_query}"
                     
                     rag_response = st.session_state.rag_retriever.retrieve(
                         search_query,
@@ -491,7 +539,7 @@ def process_query(query: str):
                             </div>
                             """, unsafe_allow_html=True)
                 
-                st.caption(f"⏱️ Response time: {response_time:.2f}s")
+                st.caption(f"✅ Query type: normal | ⏱️ {response_time:.2f}s")
                 
                 # Store message
                 st.session_state.messages.append({
@@ -499,7 +547,8 @@ def process_query(query: str):
                     "content": answer,
                     "sources": sources,
                     "response_time": response_time,
-                    "confidence": confidence
+                    "confidence": confidence,
+                    "query_type": "normal"
                 })
                 
                 # Update conversation memory (keep last 10 exchanges)
@@ -523,6 +572,7 @@ def process_query(query: str):
                     "response_time": response_time,
                     "confidence": confidence,
                     "success": success,
+                    "query_type": "normal",
                     "timestamp": datetime.now().isoformat()
                 })
                 st.session_state.query_analytics = analytics
@@ -663,6 +713,46 @@ def render_analytics_tab():
         return
     
     analytics_df = pd.DataFrame(st.session_state.query_analytics)
+    
+    # Query Type Distribution (if available)
+    if 'query_type' in analytics_df.columns:
+        st.markdown("#### 🏷️ Query Type Distribution")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            type_counts = analytics_df['query_type'].value_counts()
+            fig = px.pie(
+                values=type_counts.values,
+                names=type_counts.index,
+                title="Query Types",
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font_color='#1a1a2e'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Query type bar chart
+            fig = px.bar(
+                x=type_counts.index,
+                y=type_counts.values,
+                title="Query Types Count",
+                labels={"x": "Type", "y": "Count"},
+                color=type_counts.index,
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font_color='#1a1a2e',
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("---")
     
     # Response Time Chart
     col1, col2 = st.columns(2)
