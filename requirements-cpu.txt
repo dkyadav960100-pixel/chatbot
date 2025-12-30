@@ -1,0 +1,27 @@
+# Lightweight requirements (CPU only, faster startup)
+# Use this for systems without GPU
+
+# Telegram Bot
+python-telegram-bot>=20.7
+
+# RAG System (lighter models)
+sentence-transformers>=2.2.2
+numpy>=1.24.0
+
+# Vision System - CPU optimized
+Pillow>=10.0.0
+transformers>=4.36.0
+
+# PyTorch CPU only
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+
+# HTTP Client
+requests>=2.31.0
+aiohttp>=3.9.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# PDF Support (optional)
+PyPDF2>=3.0.0

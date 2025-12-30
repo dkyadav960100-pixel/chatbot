@@ -1,0 +1,106 @@
+# GenAI Telegram Bot - Docker Compose Configuration
+# Includes bot, Ollama (LLM), and optional monitoring
+
+version: '3.8'
+
+services:
+  # Main bot service
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: genai-telegram-bot
+    restart: unless-stopped
+    environment:
+      # Required: Telegram Bot Token
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      
+      # LLM Configuration
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:1b}
+      
+      # Optional: OpenAI fallback
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      
+      # Vision Configuration
+      - VISION_MODEL=${VISION_MODEL:-blip}
+      - DEVICE=cpu
+      
+      # Cache and debug
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Persist data
+      - bot_data:/app/data
+      - bot_cache:/app/cache
+      - ./knowledge_base:/app/knowledge_base:ro
+      - ./logs:/app/logs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Ollama LLM Service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-llm
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - bot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # Model puller (one-time setup)
+  ollama-pull:
+    image: curlimages/curl:latest
+    container_name: ollama-model-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for Ollama to be ready...' &&
+        sleep 5 &&
+        echo 'Pulling model ${OLLAMA_MODEL:-llama3.2:1b}...' &&
+        curl -X POST http://ollama:11434/api/pull -d '{\"name\": \"${OLLAMA_MODEL:-llama3.2:1b}\"}' &&
+        echo 'Model pulled successfully!'
+      "
+    networks:
+      - bot-network
+    restart: "no"
+
+networks:
+  bot-network:
+    driver: bridge
+
+volumes:
+  bot_data:
+    driver: local
+  bot_cache:
+    driver: local
+  ollama_models:
+    driver: local

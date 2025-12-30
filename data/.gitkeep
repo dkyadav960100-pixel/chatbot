@@ -1,0 +1,7 @@
+# Data Directory
+
+This directory stores:
+- `vector_store.db` - SQLite database with document embeddings
+- `cache.db` - Query cache database
+
+These files are auto-generated and should not be committed to version control.
