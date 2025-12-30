@@ -1,42 +1,13 @@
-# GenAI Telegram Bot Requirements
-# Core dependencies for the hybrid RAG + Vision bot
-
-# Telegram Bot
 python-telegram-bot>=20.7
-
-# RAG System
 sentence-transformers>=2.2.2
 numpy>=1.24.0
-
-# Vision System
 Pillow>=10.0.0
 transformers>=4.36.0
 torch>=2.0.0
-
-# Streamlit UI
 streamlit>=1.29.0
 plotly>=5.18.0
 pandas>=2.0.0
-
-# LLM (optional - for local inference)
-# ollama is accessed via API, no Python package needed
-
-# HTTP Client
 requests>=2.31.0
 aiohttp>=3.9.0
-
-# Data Storage
-# SQLite is built into Python
-
-# Configuration
 python-dotenv>=1.0.0
-
-# PDF Support (optional)
 PyPDF2>=3.0.0
-
-# Development and testing
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-black>=23.0.0
-flake8>=6.0.0
-
