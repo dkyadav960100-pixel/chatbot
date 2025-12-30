@@ -75,9 +75,9 @@ class RAGRetriever:
         self.document_loader = DocumentLoader(str(self.knowledge_base_path))
         
         self.chunker = TextChunker(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            strategy=ChunkingStrategy.PARAGRAPH
+            chunk_size,  # positional: config_or_size
+            chunk_overlap,  # positional: chunk_overlap
+            ChunkingStrategy.PARAGRAPH  # positional: strategy
         )
         
         self.embedding_model = EmbeddingModel(
